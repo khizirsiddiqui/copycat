@@ -61,7 +61,7 @@ void enableRawMode(){
 
 int main(){
     enableRawMode();
-    printf("copycat text editor\r\bPress Ctrl+Q to exit\r\nAuthor:github@khizirsiddiqui\r\n\r\n");
+    printf("Copycat: A text editor in C\r\bPress Ctrl+Q to exit\r\nAuthor:github@khizirsiddiqui\r\n\r\n");
     while(1){
         char c = '\0';
         if (read(STDIN_FILENO, &c, 1) == -1 && errno != EAGAIN) die("read");
