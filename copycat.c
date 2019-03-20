@@ -10,14 +10,22 @@
 
 /*----- data -----*/
 struct editorConfig{
+    // Cursor position
+    int cx;
+    int cy;
+
+    // Screen Dimensions
     int screenrows;
     int screencols;
+
+    // Terminal Identity
     struct termios orig_termios;
 };
 
 struct editorConfig E;
 
 /*----- defines -----*/
+#define COPYCAT_VERSION "0.0.1"
 // CTRL key assigns 5 and 6 bit to 0 and then send it
 #define CTRL_KEY(k) ((k) & 0x1f)
 
@@ -139,8 +147,25 @@ void abFree(struct abuf *ab){
 void editorDrawRows(struct abuf *ab){
     int y=0;
     for(; y < E.screenrows; y++){
-        abAppend(ab, "~", 1);
-
+        if (y == E.screenrows / 4){
+            char welcome[80];
+            int welcomelen = snprintf(welcome, sizeof(welcome),
+                "COPYCAT: A light Text-Editor in C Ver(%s)", COPYCAT_VERSION);
+            if (welcomelen > E.screencols)
+                welcomelen = E.screencols;
+            int padding = (E.screencols - welcomelen) / 2;
+            if (padding) {
+                abAppend(ab, "~", 1);
+                padding--;
+            }
+            while (padding--)
+                abAppend(ab, " ", 1);
+            abAppend(ab, welcome, welcomelen);
+        } else {
+            abAppend(ab, "~", 1);
+        }
+        // Erase the part of line to the right of curson
+        abAppend(ab, "\x1b[K", 3);
         if ( y < E.screenrows - 1)
             abAppend(ab, "\r\n", 2);
     }    
@@ -148,6 +173,9 @@ void editorDrawRows(struct abuf *ab){
 
 void editorRefreshScreen(){
     struct abuf ab = ABUF_INIT;
+
+    // Hide cursor when refreshing
+    abAppend(&ab, "\x1b[?25l", 6);
     // Erase everything on screen
     // \x1b is the escape character (27 in decimal)
     // followed by a [ character.
@@ -155,15 +183,17 @@ void editorRefreshScreen(){
     // For other commands see https://vt100.net/docs/vt100-ug/chapter3.html#ED
     // 2 is the argument for J: erase eveything on screen
     // 4 is the number of bytes to be written
-    abAppend(&ab, "\x1b[2J", 4);
+    // abAppend(&ab, "\x1b[2J", 4);
 
     // Reposition the cursor to the first row and col
     // H command is for the cursor
     // \x1b[15;45H is center on a 30x90 terminal
     abAppend(&ab, "\x1b[H", 3);
-
     editorDrawRows(&ab);
     abAppend(&ab, "\x1b[H", 3);
+
+    // Show cursor
+    abAppend(&ab, "\x1b[?25h", 6);
 
     write(STDOUT_FILENO, ab.b, ab.len);
     abFree(&ab);
