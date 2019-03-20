@@ -185,13 +185,17 @@ void editorRefreshScreen(){
     // 4 is the number of bytes to be written
     // abAppend(&ab, "\x1b[2J", 4);
 
-    // Reposition the cursor to the first row and col
+    // Reposition the cursor to the row and col
     // H command is for the cursor
     // \x1b[15;45H is center on a 30x90 terminal
     abAppend(&ab, "\x1b[H", 3);
-    editorDrawRows(&ab);
-    abAppend(&ab, "\x1b[H", 3);
 
+    editorDrawRows(&ab);
+
+    char buf[25];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+    abAppend(&ab, buf, strlen(buf));
+    
     // Show cursor
     abAppend(&ab, "\x1b[?25h", 6);
 
@@ -200,6 +204,24 @@ void editorRefreshScreen(){
 }
 
 /*----- input -----*/
+void editorMoveCursor(char key){
+    switch (key)
+    {
+        case 'a':
+            E.cx--;
+            break;
+        case 'd':
+            E.cx++;
+            break;
+        case 'w':
+            E.cy--;
+            break;
+        case 's':
+            E.cy++;
+            break;
+    }
+}
+
 void editorProcessKeyPress(){
     char c = editorReadKey();
     switch (c){
@@ -208,11 +230,19 @@ void editorProcessKeyPress(){
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
             break;
+        case 'w':
+        case 'a':
+        case 's':
+        case 'd':
+            editorMoveCursor(c);
+            break;
     }
 }
 
 /*----- init -----*/
 void initEditor(){
+    E.cx = 0;
+    E.cy = 0;
     if(getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
 }
