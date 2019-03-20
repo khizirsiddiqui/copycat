@@ -91,7 +91,6 @@ int getCursorPosition(int *rows, int *cols){
         i++;
     }
     buf[i]='\0';
-    printf("\r\n&buf[1]: '%s'\r\n", &buf[1]);
     if (buf[0] != '\x1b' || buf[1] != '[')
         return -1;
     if (sscanf(&buf[2], "%d;%d", rows, cols) != 2)
@@ -135,9 +134,10 @@ void abAppend(struct abuf *ab, const char *s, int len){
 void abFree(struct abuf *ab){
     free(ab->b);
 }
+
 /*----- output -----*/
 void editorDrawRows(struct abuf *ab){
-    int y;
+    int y=0;
     for(; y < E.screenrows; y++){
         abAppend(ab, "~", 1);
 
