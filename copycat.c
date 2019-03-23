@@ -1,4 +1,13 @@
 /*----- includes -----*/
+
+// Feature test Macros:
+// https://www.gnu.org/software/libc/manual/html_node/Feature-Test-Macros.html
+// To allow compiler compatibilities
+
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE 
+
 #include <termios.h>
 #include <unistd.h>
 #include <errno.h>
@@ -7,8 +16,16 @@
 #include <ctype.h>
 #include <string.h>
 #include <sys/ioctl.h> // For window size
+#include <sys/types.h> // ssize_t
 
 /*----- data -----*/
+
+// To store row data
+typedef struct erow {
+    int size;
+    char *chars;
+} erow;
+
 struct editorConfig{
     // Cursor position
     int cx;
@@ -17,6 +34,10 @@ struct editorConfig{
     // Screen Dimensions
     int screenrows;
     int screencols;
+
+    // Data
+    int numrows;
+    erow *row;
 
     // Terminal Identity
     struct termios orig_termios;
@@ -168,14 +189,50 @@ int getWindowSize(int *rows, int *cols){
     if(ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0){
         if(write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) 
             return -1;
-        getCursorPosition(rows, cols);
-        return -1;
+        return getCursorPosition(rows, cols);
     } else {
         *cols = ws.ws_col;
         *rows = ws.ws_row;
         return 0;
     }
 }
+
+/*----- row operations -------*/
+
+void editorAppendRow(char *s, size_t len){
+    E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
+
+    int at = E.numrows;
+    E.row[at].size = len;
+    E.row[at].chars = malloc(len + 1);
+    memcpy(E.row[at].chars, s, len);
+    E.row[at].chars[len] = '\0';
+    E.numrows++;
+}
+
+
+/*----- file i/o -----*/
+void editorOpen(char *filename){
+    FILE *fp = fopen(filename, "r");
+    if(!fp) die("fopen");
+
+    char *line = NULL;
+
+    ssize_t linelen;
+    size_t linecap = 0; // stores how much memory was allocated
+
+    // getline usefull for assignments when the instream memory managament can not
+    // be predicted 
+    while ((linelen = getline(&line, &linecap, fp)) != -1){
+        while (linelen > 0 && (line[linelen - 1] == '\n' ||
+                               line[linelen - 1] == '\r'))
+                linelen--;
+        editorAppendRow(line, linelen);
+    }
+    free(line);
+    fclose(fp);
+}
+
 
 /*----- append buffer -----*/
 struct abuf {
@@ -203,22 +260,29 @@ void abFree(struct abuf *ab){
 void editorDrawRows(struct abuf *ab){
     int y=0;
     for(; y < E.screenrows; y++){
-        if (y == E.screenrows / 4){
-            char welcome[80];
-            int welcomelen = snprintf(welcome, sizeof(welcome),
-                "COPYCAT: A light Text-Editor in C Ver(%s)", COPYCAT_VERSION);
-            if (welcomelen > E.screencols)
-                welcomelen = E.screencols;
-            int padding = (E.screencols - welcomelen) / 2;
-            if (padding) {
+        if (y >= E.numrows){
+            if (E.numrows == 0 && y == E.screenrows / 4){
+                char welcome[80];
+                int welcomelen = snprintf(welcome, sizeof(welcome),
+                    "COPYCAT: A light Text-Editor in C Ver(%s)", COPYCAT_VERSION);
+                if (welcomelen > E.screencols)
+                    welcomelen = E.screencols;
+                int padding = (E.screencols - welcomelen) / 2;
+                if (padding) {
+                    abAppend(ab, "~", 1);
+                    padding--;
+                }
+                while (padding--)
+                    abAppend(ab, " ", 1);
+                abAppend(ab, welcome, welcomelen);
+            } else {
                 abAppend(ab, "~", 1);
-                padding--;
             }
-            while (padding--)
-                abAppend(ab, " ", 1);
-            abAppend(ab, welcome, welcomelen);
         } else {
-            abAppend(ab, "~", 1);
+            // Print the content of data row-wise
+            int len = E.row[y].size;
+            if (len > E.screencols) len = E.screencols;
+            abAppend(ab, E.row[y].chars, len);
         }
         // Erase the part of line to the right of curson
         abAppend(ab, "\x1b[K", 3);
@@ -320,13 +384,17 @@ void editorProcessKeyPress(){
 void initEditor(){
     E.cx = 0;
     E.cy = 0;
+    E.numrows = 0;
+    E.row = NULL;
     if(getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
 }
 
-int main(){
+int main(int argc, char *argv[]){
     enableRawMode();
     initEditor();
+    if (argc >= 2)
+        editorOpen(argv[1]);
     
     while(1){
         editorRefreshScreen();
