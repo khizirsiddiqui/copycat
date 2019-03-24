@@ -24,6 +24,9 @@
 typedef struct erow {
     int size;
     char *chars;
+
+    int rsize;
+    char *renders;
 } erow;
 
 struct editorConfig{
@@ -38,6 +41,8 @@ struct editorConfig{
     // Data
     int numrows;
     erow *row;
+    int rowoff;
+    int coloff;
 
     // Terminal Identity
     struct termios orig_termios;
@@ -49,6 +54,8 @@ struct editorConfig E;
 #define COPYCAT_VERSION "0.0.1"
 // CTRL key assigns 5 and 6 bit to 0 and then send it
 #define CTRL_KEY(k) ((k) & 0x1f)
+
+#define COPYCAT_TAB_STOP 4
 
 enum editorKey {
     ARROW_LEFT = 1000,
@@ -198,6 +205,29 @@ int getWindowSize(int *rows, int *cols){
 }
 
 /*----- row operations -------*/
+void editorUpdateRow(erow *row) {
+    int tabs=0;
+    int j;
+
+    for ( j = 0; j<row->size; j++)
+        if (row->chars[j] == '\t') tabs++;
+    
+    free(row->renders);
+    row->renders = malloc(row->size + tabs*(COPYCAT_TAB_STOP - 1) + 1);
+    
+    int idx=0;
+    for ( j = 0; j < row->size; j++) {
+        if (row->chars[j] == '\t') {
+            row->renders[idx++] = ' ';
+            while (idx % COPYCAT_TAB_STOP != 0)
+                row->renders[idx++] = ' ';
+        } else 
+            row->renders[idx++] = row->chars[j];
+    }
+    row->renders[idx] = '\0';
+    row->rsize = idx;
+}
+
 
 void editorAppendRow(char *s, size_t len){
     E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
@@ -207,6 +237,11 @@ void editorAppendRow(char *s, size_t len){
     E.row[at].chars = malloc(len + 1);
     memcpy(E.row[at].chars, s, len);
     E.row[at].chars[len] = '\0';
+
+    E.row[at].rsize = 0;
+    E.row[at].renders = NULL;
+    editorUpdateRow(&E.row[at]);
+
     E.numrows++;
 }
 
@@ -257,10 +292,25 @@ void abFree(struct abuf *ab){
 }
 
 /*----- output -----*/
+void editorScroll(){
+    if (E.cy < E.rowoff) {
+        // If the cursor is above visible window
+        E.rowoff = E.cy;
+    }
+    if (E.cy >= E.rowoff + E.screenrows)
+        // If the cursor is below the bottom of visible window
+        E.rowoff = E.cy - E.screenrows + 1;
+    if (E.cx < E.coloff)
+        E.coloff = E.cx;
+    if (E.cx >= E.coloff + E.screenrows)
+        E.coloff = E.cx - E.screenrows + 1;
+}
+
 void editorDrawRows(struct abuf *ab){
     int y=0;
     for(; y < E.screenrows; y++){
-        if (y >= E.numrows){
+        int filerows = y + E.rowoff;
+        if (filerows >= E.numrows){
             if (E.numrows == 0 && y == E.screenrows / 4){
                 char welcome[80];
                 int welcomelen = snprintf(welcome, sizeof(welcome),
@@ -280,9 +330,10 @@ void editorDrawRows(struct abuf *ab){
             }
         } else {
             // Print the content of data row-wise
-            int len = E.row[y].size;
+            int len = E.row[filerows].rsize - E.coloff;
+            if (len < 0) len = 0; // User scrolling past the end of line
             if (len > E.screencols) len = E.screencols;
-            abAppend(ab, E.row[y].chars, len);
+            abAppend(ab, &E.row[filerows].renders[E.coloff], len);
         }
         // Erase the part of line to the right of curson
         abAppend(ab, "\x1b[K", 3);
@@ -292,6 +343,8 @@ void editorDrawRows(struct abuf *ab){
 }
 
 void editorRefreshScreen(){
+    editorScroll();
+
     struct abuf ab = ABUF_INIT;
 
     // Hide cursor when refreshing
@@ -313,7 +366,7 @@ void editorRefreshScreen(){
     editorDrawRows(&ab);
 
     char buf[25];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", E.cy + 1, E.cx + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.cx - E.coloff) + 1);
     abAppend(&ab, buf, strlen(buf));
     
     // Show cursor
@@ -325,25 +378,41 @@ void editorRefreshScreen(){
 
 /*----- input -----*/
 void editorMoveCursor(int key){
+    erow *row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
     switch (key)
     {
         case ARROW_LEFT:
             if(E.cx != 0)
                 E.cx--;
+            else if (E.cy > 0) {
+                E.cy--;
+                E.cx = E.row[E.cy].size;
+            }
             break;
         case ARROW_RIGHT:
-            if(E.cx != E.screencols - 1)
+            if (row && E.cx < row->size)
+                // Move only when to the left of end of line
                 E.cx++;
+            else if (row && E.cx == row->size) {
+                // When the cursor reaches end of line
+                E.cy++;
+                E.cx = 0;
+            }
             break;
         case ARROW_UP:
             if(E.cy != 0)
                 E.cy--;
             break;
         case ARROW_DOWN:
-            if (E.cy != E.screenrows - 1)
+            if (E.cy < E.numrows)
                 E.cy++;
             break;
     }
+
+    row = (E.cy >= E.numrows) ? NULL : &E.row[E.cy];
+    int rowlen = row ? row->size : 0;
+    if (E.cx > rowlen)
+        E.cx = rowlen;
 }
 
 void editorProcessKeyPress(){
@@ -385,6 +454,8 @@ void initEditor(){
     E.cx = 0;
     E.cy = 0;
     E.numrows = 0;
+    E.rowoff = 0;
+    E.coloff = 0;
     E.row = NULL;
     if(getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
