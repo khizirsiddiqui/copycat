@@ -435,6 +435,7 @@ void editorProcessKeyPress(){
     int c = editorReadKey();
     switch (c){
         case CTRL_KEY('q'):
+            // Exit on CTRL+Q
             write(STDOUT_FILENO, "\x1b[2J", 4);
             write(STDOUT_FILENO, "\x1b[H", 3);
             exit(0);
@@ -444,12 +445,21 @@ void editorProcessKeyPress(){
             E.cx = 0;
             break;
         case END_KEY:
-            E.cx = E.screencols - 1;
+            if (E.cy < E.numrows)
+                // Bring cursor to the end of line
+                E.cx = E.row[E.cy].size;
             break;
         
         case PAGE_DOWN:
         case PAGE_UP:
             {
+                if (c == PAGE_UP) {
+                    E.cy = E.rowoff;
+                } else if (c == PAGE_DOWN) {
+                    E.cy = E.rowoff + E.screenrows - 1;
+                    if (E.cy > E.numrows) E.cy = E.numrows;
+                }
+
                 int times = E.screenrows; // variable declaration isn't allowed in 
                                           // switch case unless inside a block
                 while(times--)
