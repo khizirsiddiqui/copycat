@@ -1,3 +1,13 @@
+/*
+    COPYCAT ver 0.0.1
+    A vim-like editor written in C without using
+    any external libraries
+    Auhor: Mohd Khizir Siddiqui git@khizirsiddiqui
+    License: MIT
+    Follows from tutorial: https://viewsourcecode.org/snaptoken/kilo/
+*/
+
+
 /*----- includes -----*/
 
 // Feature test Macros:
@@ -13,6 +23,8 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
+#include <time.h>
 #include <ctype.h>
 #include <string.h>
 #include <sys/ioctl.h> // For window size
@@ -44,6 +56,13 @@ struct editorConfig{
     erow *row;
     int rowoff;
     int coloff;
+
+    // File Data
+    char *filename;
+
+    // StatusBar msg
+    char statusmsg[80];
+    time_t statusmsg_time;
 
     // Terminal Identity
     struct termios orig_termios;
@@ -260,6 +279,8 @@ void editorAppendRow(char *s, size_t len){
 
 /*----- file i/o -----*/
 void editorOpen(char *filename){
+    free(E.filename);
+    E.filename = strdup(filename); // Duplicate the mallocated string
     FILE *fp = fopen(filename, "r");
     if(!fp) die("fopen");
 
@@ -353,9 +374,46 @@ void editorDrawRows(struct abuf *ab){
         }
         // Erase the part of line to the right of curson
         abAppend(ab, "\x1b[K", 3);
-        if ( y < E.screenrows - 1)
-            abAppend(ab, "\r\n", 2);
+        abAppend(ab, "\r\n", 2);
     }    
+}
+
+void editorDrawStatusBar(struct abuf *ab) {
+    // Graphic Rendition
+    // https://vt100.net/docs/vt100-ug/chapter3.html#SGR
+    // 0: Attributes Off (Default)
+    // 1: Bold
+    // 4: Underscore
+    // 5: Blink
+    // 7: Negative image
+    abAppend(ab, "\x1b[7m", 4);      // Invert color of output
+    char status[80], rstatus[80];
+    int len = snprintf(status, sizeof(status), "%.20s - %d lines",
+        E.filename ? E.filename : "[No Name]", E.numrows);
+    int rlen = snprintf(rstatus, sizeof(status), "%d/%d",
+        E.cy + 1, E.numrows);
+    if (len > E.screencols) len = E.screencols;
+    abAppend(ab, status, len);
+    while (len < E.screencols) {
+        if (E.screencols - len == rlen) {
+            abAppend(ab, rstatus, rlen);
+            break;
+        } else {
+            abAppend(ab, " ", 1);
+            len++;
+        }
+    }
+    abAppend(ab, "\x1b[m", 3);      // Reset the color in output
+    abAppend(ab, "\r\n", 2);
+}
+
+void editorDrawMessageBar(struct abuf *ab) {
+    abAppend(ab, "\x1b[K", 3);      // Clear the msgBar text
+    int msglen = strlen(E.statusmsg);
+    if (msglen > E.screencols) msglen = E.screencols;
+    if (msglen && time(NULL) - E.statusmsg_time < 5)
+        // Display only if not older than 5 seconds
+        abAppend(ab, E.statusmsg, msglen);
 }
 
 void editorRefreshScreen(){
@@ -380,9 +438,13 @@ void editorRefreshScreen(){
     abAppend(&ab, "\x1b[H", 3);
 
     editorDrawRows(&ab);
+    editorDrawStatusBar(&ab);
+    editorDrawMessageBar(&ab);
 
     char buf[25];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (E.cy - E.rowoff) + 1, (E.rx - E.coloff) + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", 
+                            (E.cy - E.rowoff) + 1, 
+                            (E.rx - E.coloff) + 1);
     abAppend(&ab, buf, strlen(buf));
     
     // Show cursor
@@ -390,6 +452,17 @@ void editorRefreshScreen(){
 
     write(STDOUT_FILENO, ab.b, ab.len);
     abFree(&ab);
+}
+
+void editorSetStatusMessage(const char *fmt, ...) {
+    // printf like function to set status bar message
+    va_list ap;         // keeps track of the argumments passed
+    va_start(ap, fmt);  // records the addresses of starting from fmt 
+
+    // to help make our own printf function
+    vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
+    va_end(ap);
+    E.statusmsg_time = time(NULL);
 }
 
 /*----- input -----*/
@@ -484,8 +557,12 @@ void initEditor(){
     E.rowoff = 0;
     E.coloff = 0;
     E.row = NULL;
+    E.filename = NULL;
+    E.statusmsg[0]='\0';
+    E.statusmsg_time = 0;
     if(getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
+    E.screenrows -= 2;
 }
 
 int main(int argc, char *argv[]){
@@ -494,6 +571,8 @@ int main(int argc, char *argv[]){
     if (argc >= 2)
         editorOpen(argv[1]);
     
+    editorSetStatusMessage("Copycat Text Editor : Ctrl+Q: Quit");
+
     while(1){
         editorRefreshScreen();
         editorProcessKeyPress();
