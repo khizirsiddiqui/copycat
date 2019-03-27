@@ -7,7 +7,6 @@
     Follows from tutorial: https://viewsourcecode.org/snaptoken/kilo/
 */
 
-
 /*----- includes -----*/
 
 // Feature test Macros:
@@ -27,8 +26,12 @@
 #include <time.h>
 #include <ctype.h>
 #include <string.h>
+#include <fcntl.h>
 #include <sys/ioctl.h> // For window size
 #include <sys/types.h> // ssize_t
+
+/*----- prototypes -----*/
+void editorSetStatusMessage(const char *fmt, ...);
 
 /*----- data -----*/
 
@@ -56,6 +59,7 @@ struct editorConfig{
     erow *row;
     int rowoff;
     int coloff;
+    int dirty;  // Tracks whether data has been changed
 
     // File Data
     char *filename;
@@ -78,6 +82,8 @@ struct editorConfig E;
 #define COPYCAT_TAB_STOP 4
 
 enum editorKey {
+    BACKSPACE = 127,
+
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
@@ -274,6 +280,7 @@ void editorAppendRow(char *s, size_t len){
     editorUpdateRow(&E.row[at]);
 
     E.numrows++;
+    E.dirty++;
 }
 
 void editorRowInsertChar(erow *row, int at, int c) {
@@ -285,6 +292,8 @@ void editorRowInsertChar(erow *row, int at, int c) {
     row->size++;
     row->chars[at] = c;
     editorUpdateRow(row);
+
+    E.dirty++;
 }
 
 /*----- editor Operations ----*/
@@ -299,6 +308,28 @@ void editorInsertChar(int c) {
 }
 
 /*----- file i/o -----*/
+
+char *editorRowToString(int *buflen) {
+    // Warning: free() the returned array after use
+
+    int totlen = 0;
+    int j;
+    for (j = 0; j < E.numrows; j++)
+        totlen += E.row[j].size + 1;
+    *buflen = totlen;
+
+    char *buf = malloc(totlen);     // Stores the row text
+    char *p = buf;
+    for (j = 0; j < E.numrows; j++) {
+        memcpy(p, E.row[j].chars, E.row[j].size);
+        p += E.row[j].size;
+        *p = '\n';
+        p++;
+    }
+
+    return buf;
+}
+
 void editorOpen(char *filename){
     free(E.filename);
     E.filename = strdup(filename); // Duplicate the mallocated string
@@ -320,8 +351,40 @@ void editorOpen(char *filename){
     }
     free(line);
     fclose(fp);
+
+    E.dirty = 0;
 }
 
+void editorSave() {
+    if (E.filename == NULL) return;
+
+    int len;
+    char *buf = editorRowToString(&len);
+
+    // O_RDWR: Read and write
+    // O_CREAT: Create if doesn't exist
+    // 0644: Std permission given to file
+    //          User can edit and read
+    //          Other can read only
+    int fd = open(E.filename, O_RDWR | O_CREAT, 0644);
+
+    if (fd != -1) {
+        // Sets the file size to specific length
+        if(ftruncate(fd, len) != -1) {
+            if(write(fd, buf, len) == len) {
+                close(fd);
+                free(buf);
+                E.dirty = 0;
+                editorSetStatusMessage("%dB written to disk", len);
+                return;
+            }
+
+        }
+        close(fd);
+    }
+    free(buf);
+    editorSetStatusMessage("Can't Save! I/O Error:%s", strerror(errno));
+}
 
 /*----- append buffer -----*/
 struct abuf {
@@ -409,8 +472,10 @@ void editorDrawStatusBar(struct abuf *ab) {
     // 7: Negative image
     abAppend(ab, "\x1b[7m", 4);      // Invert color of output
     char status[80], rstatus[80];
-    int len = snprintf(status, sizeof(status), "%.20s - %d lines",
-        E.filename ? E.filename : "[No Name]", E.numrows);
+    int len = snprintf(status, sizeof(status), "%.20s %s- %d lines",
+        E.filename ? E.filename : "[No Name]", 
+        E.dirty ? "(modified) " : "", 
+        E.numrows);
     int rlen = snprintf(rstatus, sizeof(status), "%d/%d",
         E.cy + 1, E.numrows);
     if (len > E.screencols) len = E.screencols;
@@ -528,6 +593,10 @@ void editorMoveCursor(int key){
 void editorProcessKeyPress(){
     int c = editorReadKey();
     switch (c){
+        case '\r':
+            // TODO
+            break;
+
         case CTRL_KEY('q'):
             // Exit on CTRL+Q
             write(STDOUT_FILENO, "\x1b[2J", 4);
@@ -538,6 +607,7 @@ void editorProcessKeyPress(){
         case HOME_KEY:
             E.cx = 0;
             break;
+        
         case END_KEY:
             if (E.cy < E.numrows)
                 // Bring cursor to the end of line
@@ -566,7 +636,22 @@ void editorProcessKeyPress(){
         case ARROW_RIGHT:
             editorMoveCursor(c);
             break;
+
+        case CTRL_KEY('s'):
+            editorSave();
+            break;
         
+        case BACKSPACE:
+        case CTRL_KEY('h'):
+        case DEL_KEY:
+            // TODO
+            break;
+
+        case CTRL_KEY('l'):
+        case '\x1b':
+            // Screen Refresh
+            break;
+
         default:
             editorInsertChar(c);
             break;
@@ -582,6 +667,7 @@ void initEditor(){
     E.rowoff = 0;
     E.coloff = 0;
     E.row = NULL;
+    E.dirty = 0;
     E.filename = NULL;
     E.statusmsg[0]='\0';
     E.statusmsg_time = 0;
@@ -596,7 +682,7 @@ int main(int argc, char *argv[]){
     if (argc >= 2)
         editorOpen(argv[1]);
     
-    editorSetStatusMessage("Copycat Text Editor : Ctrl+Q: Quit");
+    editorSetStatusMessage("Copycat Text Editor : CTRL+S: Save | Ctrl+Q: Quit");
 
     while(1){
         editorRefreshScreen();
