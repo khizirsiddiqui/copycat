@@ -317,6 +317,7 @@ void editorRowInsertChar(erow *row, int at, int c) {
 
 void editorRowAppendString(erow *row, char *s, size_t len) {
     row->chars = realloc(row->chars, row->size + len + 1);
+    memcpy(&row->chars[row->size], s, len);
     row->size += len;
     row->chars[row->size] = '\0';
     editorUpdateRow(row);
@@ -359,7 +360,7 @@ void editorInsertNewLine() {
     E.cx=0;
 }
 
-void editorDelChar(int c) {
+void editorDelChar() {
     if (E.cy == E.numrows) return;
     if (E.cx == 0 && E.cy == 0) return;
 
@@ -762,7 +763,7 @@ void editorProcessKeyPress(){
         case CTRL_KEY('h'):
         case DEL_KEY:
             if (c == DEL_KEY) editorMoveCursor(ARROW_RIGHT);
-            editorDelChar(c);
+            editorDelChar();
             break;
 
         case CTRL_KEY('l'):
