@@ -46,6 +46,7 @@ char *editorPrompt(char *prompt, void (*callback)(char*, int));
 
 
 #define HL_HIGHLIGHT_NUMBERS (1<<0)
+#define HL_HIGHLIGHT_STRINGS (1<<1)
 
 // Length of a tab space
 #define COPYCAT_TAB_STOP 4
@@ -106,6 +107,7 @@ enum editorColors {
 
 enum editorHighlight {
     HL_NORMAL = 0,
+    HL_STRINGS,
     HL_NUMBER,
     HL_MATCH
 };
@@ -170,7 +172,7 @@ struct editorSyntax HLDB[] = {
     {
         "c",
         C_HL_EXTENSIONS,
-        HL_HIGHLIGHT_NUMBERS
+        HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
     },
 };
 
@@ -312,7 +314,7 @@ int getWindowSize(int *rows, int *cols){
 /*----- syntax highlighting ---*/
 
 int is_separator(int c) {
-    return isspace(c) || c == '\0' || strchr(",.()+-/*=~%<>[];\"", c) != NULL;
+    return isspace(c) || c == '\0' || strchr(",.()+-/*=~%<>[];", c) != NULL;
 }
 
 void editorUpdateSyntax(erow *row) {
@@ -322,11 +324,39 @@ void editorUpdateSyntax(erow *row) {
     if (E.syntax == NULL) return;
 
     int prev_sep = 1;
+    int in_string = 0;
 
     int  i;
     for (i = 0; i < row->rsize;) {
         char c = row->renders[i];
         unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NUMBER;
+
+        if (E.syntax->flags & HL_HIGHLIGHT_STRINGS) {
+            if (in_string) {
+                row->hl[i] = HL_STRINGS;
+
+                // Two characters at once
+                if (c == '\\' && i + 1< row->size) {
+                    row->hl[i+1] = HL_STRINGS;
+                    i += 2;
+                    continue;
+                }
+
+                // End of Double Inverteds or Single Inverteds
+                if (c == in_string)
+                    in_string = 0;
+                i++;
+                prev_sep = 1;
+                continue;
+            } else {
+                if (c == '"' || c == '\'') {
+                    in_string = c;
+                    row->hl[i] = HL_STRINGS;
+                    i++;
+                    continue;
+                }
+            }
+        }
 
         if (E.syntax->flags & HL_HIGHLIGHT_NUMBERS) {
             if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
@@ -344,6 +374,7 @@ void editorUpdateSyntax(erow *row) {
 
 int editorSyntaxToColor(int hl) {
     switch (hl) {
+        case HL_STRINGS: return FG_MAGENTA;
         case HL_NUMBER: return FG_RED;
         case HL_MATCH: return FG_BLUE;
         default: return FG_WHITE;
