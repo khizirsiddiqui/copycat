@@ -108,6 +108,8 @@ enum editorColors {
 enum editorHighlight {
     HL_NORMAL = 0,
     HL_COMMENT,
+    HL_KEYWORD1,
+    HL_KEYWORD2,
     HL_STRINGS,
     HL_NUMBER,
     HL_MATCH
@@ -118,6 +120,7 @@ enum editorHighlight {
 struct editorSyntax {
     char *filetype;     // Displayed to user in status-bar
     char **filematch;   // Pattern to recognize filetype
+    char **keywords;
     char *single_line_comment_start;    // Contains starting of SL comments
     int flags;          // Whether to highlight strings or numbers
 };
@@ -167,13 +170,21 @@ struct editorConfig E;
 
 /*----- filetypes -----*/
 
-char *C_HL_EXTENSIONS[] = { ".c", ".h", ".cpp", NULL };
+// C/C++ syntax
+char *C_HL_extensions[] = { ".c", ".h", ".cpp", NULL };
+char *C_HL_keywords[] = {
+  "switch", "if", "while", "for", "break", "continue", "return", "else", "#include",
+  "struct", "union", "typedef", "static", "enum", "class", "case", "#define",
+  "int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
+  "void|", "NULL|", NULL
+};
 
 // Highlight Database : HLDB
 struct editorSyntax HLDB[] = {
     {
         "c",
-        C_HL_EXTENSIONS,
+        C_HL_extensions,
+        C_HL_keywords,
         "//",
         HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS
     },
@@ -326,6 +337,8 @@ void editorUpdateSyntax(erow *row) {
 
     if (E.syntax == NULL) return;
 
+    char **keywords = E.syntax->keywords;
+
     char *scs = E.syntax->single_line_comment_start;
     int scs_len = scs ? strlen(scs) : 0;
 
@@ -337,7 +350,7 @@ void editorUpdateSyntax(erow *row) {
         char c = row->renders[i];
         unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NUMBER;
 
-        // Comments
+        // Comments Highlight
         if (scs_len && !in_string) {
             if (!strncmp(&row->renders[i], scs, scs_len)) {
                 memset(&row->hl[i], HL_COMMENT, row->rsize - i);
@@ -383,6 +396,29 @@ void editorUpdateSyntax(erow *row) {
                 continue;
             }
         }
+
+        // Keywords
+        if (prev_sep) {
+            int j;
+            for (j = 0; keywords[j]; j++) {
+                int klen = strlen(keywords[j]);
+                int kw2 = keywords[j][klen - 1] == '|';
+                if (kw2)
+                    klen--;
+                
+                if (!strncmp(&row->renders[i], keywords[j], klen) &&
+                    is_separator(row->renders[i + klen])) {
+                        memset(&row->hl[i], kw2 ? HL_KEYWORD2 : HL_KEYWORD1, klen);
+                        i += klen;
+                        break;
+                    }
+            }
+            if (keywords[j] != NULL){
+                prev_sep = 0;
+                continue;
+            }
+        }
+
         prev_sep = is_separator(c);
         i++;
     }
@@ -392,6 +428,8 @@ int editorSyntaxToColor(int hl) {
     switch (hl) {
         case HL_STRINGS: return FG_MAGENTA;
         case HL_COMMENT: return FG_CYAN;
+        case HL_KEYWORD1: return FG_BROWN;
+        case HL_KEYWORD2: return FG_GREEN;
         case HL_NUMBER: return FG_RED;
         case HL_MATCH: return FG_BLUE;
         default: return FG_WHITE;
