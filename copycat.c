@@ -35,7 +35,88 @@ void editorSetStatusMessage(const char *fmt, ...);
 void editorRefreshScreen();
 char *editorPrompt(char *prompt, void (*callback)(char*, int));
 
+
+/*----- defines -----*/
+#define COPYCAT_VERSION "0.0.1"
+// CTRL key assigns 5 and 6 bit to 0 and then send it
+#define CTRL_KEY(k) ((k) & 0x1f)
+
+// Returns ESC [ %d m seq - Always to be used with %d replacement
+#define ESC_SEQ "\x1b[%dm"  
+
+
+#define HL_HIGHLIGHT_NUMBERS (1<<0)
+
+// Length of a tab space
+#define COPYCAT_TAB_STOP 4
+// Ctrl+Q quit after n times
+#define COPYCAT_QUIT_TIMES 3
+
+enum editorKey {
+    BACKSPACE = 127,
+
+    ARROW_LEFT = 1000,
+    ARROW_RIGHT,
+    ARROW_UP,
+    ARROW_DOWN,
+
+    DEL_KEY,
+
+    HOME_KEY,   // Fn + Left Arrow
+    END_KEY,    // Fn + Right Arrow
+    PAGE_UP,     // Also works for Fn+Up Arrow
+    PAGE_DOWN    // Also works for Fn+Down Arrow
+};
+
+enum editorStyle {
+    BOLD = 1,
+    HALF_BRIGHT = 2,
+    UNDERLINE = 4,
+    BLINK = 5,
+    NORMAL_BRIGHT = 22,
+    BOLD_OFF = 22,
+    UNDERLINE_OFF = 24,
+    BLINK_OFF = 25
+};
+
+enum editorColors {
+    // All ASCII Escape Seq colors at
+    // https://en.wikipedia.org/wiki/ANSI_escape_code#SGR_(Select_Graphic_Rendition)_parameters
+    // Foreground Colors
+    FG_BLACK = 30,
+    FG_RED,
+    FG_GREEN,
+    FG_BROWN,
+    FG_BLUE,
+    FG_MAGENTA,
+    FG_CYAN,
+    FG_WHITE,
+    FG_DEFAULT = 39,
+    //Background Colors
+    BG_BLACK,
+    BG_RED,
+    BG_GREEN,
+    BG_BROWN,
+    BG_BLUE,
+    BG_MAGENTA,
+    BG_CYAN,
+    BG_WHITE,
+    BG_DEFAULT = 49
+};
+
+enum editorHighlight {
+    HL_NORMAL = 0,
+    HL_NUMBER,
+    HL_MATCH
+};
+
 /*----- data -----*/
+
+struct editorSyntax {
+    char *filetype;     // Displayed to user in status-bar
+    char **filematch;   // Pattern to recognize filetype
+    int flags;          // Whether to highlight strings or numbers
+};
 
 // To store row data
 typedef struct erow {
@@ -69,8 +150,10 @@ struct editorConfig{
     char *filename;
 
     // StatusBar msg
-    char statusmsg[80];
+    char statusmsg[100];
     time_t statusmsg_time;
+
+    struct editorSyntax *syntax;
 
     // Terminal Identity
     struct termios orig_termios;
@@ -78,43 +161,20 @@ struct editorConfig{
 
 struct editorConfig E;
 
-/*----- defines -----*/
-#define COPYCAT_VERSION "0.0.1"
-// CTRL key assigns 5 and 6 bit to 0 and then send it
-#define CTRL_KEY(k) ((k) & 0x1f)
+/*----- filetypes -----*/
 
-// Length of a tab space
-#define COPYCAT_TAB_STOP 4
-// Ctrl+Q quit after n times
-#define COPYCAT_QUIT_TIMES 3
+char *C_HL_EXTENSIONS[] = { ".c", ".h", ".cpp", NULL };
 
-enum editorKey {
-    BACKSPACE = 127,
-
-    ARROW_LEFT = 1000,
-    ARROW_RIGHT,
-    ARROW_UP,
-    ARROW_DOWN,
-
-    DEL_KEY,
-
-    HOME_KEY,   // Fn + Left Arrow
-    END_KEY,    // Fn + Right Arrow
-    PAGE_UP,     // Also works for Fn+Up Arrow
-    PAGE_DOWN    // Also works for Fn+Down Arrow
+// Highlight Database : HLDB
+struct editorSyntax HLDB[] = {
+    {
+        "c",
+        C_HL_EXTENSIONS,
+        HL_HIGHLIGHT_NUMBERS
+    },
 };
 
-enum editorColors {
-    FG_RED = 31,
-    FG_BLUE = 34,
-    FG_WHITE = 37
-};
-
-enum editorHighlight {
-    HL_NORMAL = 0,
-    HL_NUMBER,
-    HL_MATCH
-};
+#define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
 
 /*----- terminal -----*/
 void die(const char* s){
@@ -251,15 +311,34 @@ int getWindowSize(int *rows, int *cols){
 
 /*----- syntax highlighting ---*/
 
+int is_separator(int c) {
+    return isspace(c) || c == '\0' || strchr(",.()+-/*=~%<>[];\"", c) != NULL;
+}
+
 void editorUpdateSyntax(erow *row) {
     row->hl = realloc(row->hl, row->rsize);
     memset(row->hl, HL_NORMAL, row->rsize);
 
+    if (E.syntax == NULL) return;
+
+    int prev_sep = 1;
+
     int  i;
-    for (i = 0; i < row->rsize; i++) {
-        if (isdigit(row->renders[i])) {
-            row->hl[i] = HL_NUMBER;
+    for (i = 0; i < row->rsize;) {
+        char c = row->renders[i];
+        unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NUMBER;
+
+        if (E.syntax->flags & HL_HIGHLIGHT_NUMBERS) {
+            if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) ||
+                (c == '.' && prev_hl == HL_NUMBER)) {
+                row->hl[i] = HL_NUMBER;
+                i++;
+                prev_sep = 0;
+                continue;
+            }
         }
+        prev_sep = is_separator(c);
+        i++;
     }
 }
 
@@ -270,6 +349,35 @@ int editorSyntaxToColor(int hl) {
         default: return FG_WHITE;
     }
 }
+
+void editorSelectSyntaxHighlight() {
+    E.syntax = NULL;
+    if (E.filename == NULL) return;
+
+    // Pointer to the last occurence of . (period)
+    // otherwise NULL
+    char *ext = strchr(E.filename, '.');
+
+    for (unsigned int j = 0; j < HLDB_ENTRIES; j++) {
+        struct editorSyntax *s = &HLDB[j];
+        unsigned int i = 0;
+        while (s->filematch[i]) {
+            int is_ext = (s->filematch[i][0] == '.');
+            if ((is_ext && ext && !strcmp(ext, s->filematch[i]))||
+                (!is_ext && strstr(E.filename, s->filematch[i]))) {
+                    E.syntax = s;
+
+                    int filerow;
+                    for (filerow = 0; filerow < E.numrows; filerow++)
+                        editorUpdateSyntax(&E.row[filerow]);
+
+                    return;
+                }
+            i++;
+        }
+    }
+}
+
 /*----- row operations -------*/
 
 int editorRowCxToRx(erow *row, int cx) {
@@ -411,7 +519,7 @@ void editorInsertNewLine() {
         editorUpdateRow(row);
     }
     E.cy++;
-    E.cx=0;
+    E.cx = 0;
 }
 
 void editorDelChar() {
@@ -456,6 +564,9 @@ char *editorRowToString(int *buflen) {
 void editorOpen(char *filename){
     free(E.filename);
     E.filename = strdup(filename); // Duplicate the mallocated string
+
+    editorSelectSyntaxHighlight();
+
     FILE *fp = fopen(filename, "r");
     if(!fp) die("fopen");
 
@@ -485,6 +596,7 @@ void editorSave() {
             editorSetStatusMessage("Save aborted");
             return;
         }
+        editorSelectSyntaxHighlight();
     }
 
     int len;
@@ -575,7 +687,7 @@ void editorFind() {
     int saved_cx = E.cx, saved_cy = E.cy;
     int saved_colloff = E.coloff, saved_rowoff = E.rowoff;
 
-    char *query = editorPrompt("Search: %s (Use ESC/ARROW/ENTER", editorFindCallback);
+    char *query = editorPrompt("Search: \x1b[5m%s\x1b[25m (Use ESC/ARROW/ENTER", editorFindCallback);
     if (query == NULL)
         free(query);
     else {
@@ -699,7 +811,8 @@ void editorDrawStatusBar(struct abuf *ab) {
         E.filename ? E.filename : "[No Name]", 
         E.dirty ? "(modified) " : "", 
         E.numrows);
-    int rlen = snprintf(rstatus, sizeof(status), "%d/%d",
+    int rlen = snprintf(rstatus, sizeof(status), "%s | %d/%d",
+        E.syntax ? E.syntax->filetype : "no ft",
         E.cy + 1, E.numrows);
     if (len > E.screencols) len = E.screencols;
     abAppend(ab, status, len);
@@ -720,8 +833,8 @@ void editorDrawMessageBar(struct abuf *ab) {
     abAppend(ab, "\x1b[K", 3);      // Clear the msgBar text
     int msglen = strlen(E.statusmsg);
     if (msglen > E.screencols) msglen = E.screencols;
-    if (msglen && time(NULL) - E.statusmsg_time < 5)
-        // Display only if not older than 5 seconds
+    if (msglen && time(NULL) - E.statusmsg_time < 10)
+        // Display only if not older than 10 seconds
         abAppend(ab, E.statusmsg, msglen);
 }
 
@@ -737,6 +850,7 @@ void editorRefreshScreen(){
     // followed by a [ character.
     // J command is Erase in Display
     // For other commands see https://vt100.net/docs/vt100-ug/chapter3.html#ED
+    //            or http://man7.org/linux/man-pages/man4/console_codes.4.html
     // 2 is the argument for J: erase eveything on screen
     // 4 is the number of bytes to be written
     // abAppend(&ab, "\x1b[2J", 4);
@@ -864,8 +978,8 @@ void editorProcessKeyPress(){
         case CTRL_KEY('q'):
             // Exit on CTRL+Q
             if (E.dirty && quit_times > 0) {
-                editorSetStatusMessage("WARNING! File was modified"
-                    "Press Ctrl+Q %d times more to quit without saving", quit_times);
+                editorSetStatusMessage("\x1b[1mWARNING!\x1b[22m File was modified"
+                    "Press Ctrl+Q \x1b[5m%d\x1b[25m times more to quit without saving", quit_times);
                     quit_times--;
                     return;
             }
@@ -947,6 +1061,7 @@ void initEditor(){
     E.filename = NULL;
     E.statusmsg[0]='\0';
     E.statusmsg_time = 0;
+    E.syntax = NULL;
     if(getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
     E.screenrows -= 2;
@@ -958,7 +1073,8 @@ int main(int argc, char *argv[]){
     if (argc >= 2)
         editorOpen(argv[1]);
     
-    editorSetStatusMessage("Copycat Text Editor : CTRL+S: Save | Ctrl+Q: Quit | CTRL+F: Find");
+    editorSetStatusMessage("\x1b[%dm\x1b[%dmCOPYCAT\x1b[%dm\x1b[%dm: CTRL+S: Save | Ctrl+Q: Quit | CTRL+F: Find",
+                            FG_BLACK, BG_WHITE, BG_DEFAULT, FG_DEFAULT);
 
     while(1){
         editorRefreshScreen();
