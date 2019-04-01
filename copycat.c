@@ -1,5 +1,4 @@
 /*
-    @
     COPYCAT ver 0.0.1
     A vim-like editor written in C without using
     any external libraries
@@ -109,6 +108,7 @@ enum editorColors {
 enum editorHighlight {
     HL_NORMAL = 0,
     HL_COMMENT,
+    HL_MLCOMMENT,
     HL_KEYWORD1,
     HL_KEYWORD2,
     HL_STRINGS,
@@ -123,15 +123,20 @@ struct editorSyntax {
     char **filematch;   // Pattern to recognize filetype
     char **keywords;
     char *single_line_comment_start;    // Contains starting of SL comments
+    char *multi_line_comment_start;
+    char *multi_line_comment_end;
     int flags;          // Whether to highlight strings or numbers
 };
 
 // To store row data
 typedef struct erow {
+    int idx;
+
     int size;
     char *chars;
 
     unsigned char *hl;
+    int hl_open_comment;
 
     int rsize;
     char *renders;
@@ -538,19 +543,49 @@ void editorUpdateSyntax(erow *row) {
     char *scs = E.syntax->single_line_comment_start;
     int scs_len = scs ? strlen(scs) : 0;
 
+    char *mcs = E.syntax->multi_line_comment_start;
+    int mcs_len = mcs ? strlen(mcs) : 0;
+    char *mce = E.syntax->multi_line_comment_end;
+    int mce_len = mce ? strlen(mce) : 0;
+    
     int prev_sep = 1;
     int in_string = 0;
+    
+    // Used only for ML comments
+    int in_comment = ( row->idx > 0 && E.row[row->idx - 1].hl_open_comment);
 
     int  i;
     for (i = 0; i < row->rsize;) {
         char c = row->renders[i];
         unsigned char prev_hl = (i > 0) ? row->hl[i - 1] : HL_NUMBER;
 
-        // Comments Highlight
-        if (scs_len && !in_string) {
+        // Single Line Comments Highlight
+        if (scs_len && !in_string && !in_comment) {
             if (!strncmp(&row->renders[i], scs, scs_len)) {
                 memset(&row->hl[i], HL_COMMENT, row->rsize - i);
                 break;
+            }
+        }
+
+        // Multi Line Comments Highlight
+        if (mcs_len && mce_len && !in_string) {
+            if (in_comment) {
+                row->hl[i] = HL_COMMENT;
+                if (!strncmp(&row->renders[i], mce, mce_len)) {
+                    memset(&row->hl[i], HL_MLCOMMENT, mce_len);
+                    i += mce_len;
+                    in_comment = 0;
+                    prev_sep = 1;
+                    continue;
+                } else {
+                    i++;
+                    continue;
+                }
+            } else if (!strncmp(&row->renders[i], mcs, mcs_len)) {
+                memset(&row->hl[i], HL_MLCOMMENT, mcs_len);
+                i += mcs_len;
+                in_comment = 1;
+                continue;
             }
         }
 
@@ -618,11 +653,17 @@ void editorUpdateSyntax(erow *row) {
         prev_sep = is_separator(c);
         i++;
     }
+
+    int changed = (row->hl_open_comment != in_comment);
+    row->hl_open_comment = in_comment;
+    if (changed && row->idx + 1 < E.numrows)
+        editorUpdateSyntax(&E.row[row->idx + 1]);
 }
 
 int editorSyntaxToColor(int hl) {
     switch (hl) {
         case HL_STRINGS: return FG_MAGENTA;
+        case HL_MLCOMMENT:
         case HL_COMMENT: return FG_CYAN;
         case HL_KEYWORD1: return FG_BROWN;
         case HL_KEYWORD2: return FG_GREEN;
@@ -722,6 +763,10 @@ void editorDelRow(int at) {
     if (at < 0 || at >= E.numrows) return;
     editorFreeRow(&E.row[at]);
     memmove(&E.row[at], &E.row[at + 1], sizeof(erow) * (E.numrows -at - 1));
+
+    for(int i = at; i < E.numrows - 1; i++)
+        E.row[i].idx--;
+    
     E.numrows--;
     E.dirty++;
 }
@@ -732,6 +777,11 @@ void editorInsertRow(int at, char *s, size_t len){
     E.row = realloc(E.row, sizeof(erow) * (E.numrows + 1));
     memmove(&E.row[at + 1], &E.row[at], sizeof(erow) * (E.numrows - at));
 
+    for(int i = at + 1; i <= E.numrows; i++)
+        E.row[i].idx++;
+
+    E.row[at].idx = at;
+
     E.row[at].size = len;
     E.row[at].chars = malloc(len + 1);
     memcpy(E.row[at].chars, s, len);
@@ -740,6 +790,7 @@ void editorInsertRow(int at, char *s, size_t len){
     E.row[at].rsize = 0;
     E.row[at].renders = NULL;
     E.row[at].hl = NULL;
+    E.row[at].hl_open_comment = 0;
     editorUpdateRow(&E.row[at]);
 
     E.numrows++;
@@ -1055,7 +1106,7 @@ void editorDrawRows(struct abuf *ab){
             int j;
             for (j = 0; j < len; j++) {
                 if (iscntrl(c[j])) {
-                    char sym = (c[j] <= 26) ? "@" + c[j] : '?';
+                    char sym = (c[j] <= 26) ? '@' + c[j] : '?';
                     abAppend(ab, "\x1b[7m", 4);
                     abAppend(ab, &sym, 1);
                     abAppend(ab, "\x1b[m", 3);
