@@ -579,6 +579,8 @@ void editorPaste() {
     else
         editorRowAppendString(&E.row[E.cy], E.clipboard, strlen(E.clipboard));
     E.cx += strlen(E.clipboard);
+    
+    E.dirty++;
 }
 
 /*----- syntax highlighting ---*/
@@ -883,6 +885,32 @@ void editorRowDelChar(erow *row, int at) {
 
     E.dirty++;
 }
+
+void editorMoveRow(int dir) {
+    // int dir : -1 for up
+    //         : +1 for down
+
+    if ((dir == -1 && E.cy > 0) || (dir == 1 && E.cy < E.numrows)){
+        erow row = E.row[E.cy];
+        E.row[E.cy] = E.row[E.cy + dir];
+        E.row[E.cy + dir] = row;
+
+        E.row[E.cy + dir].idx += dir;
+        E.row[E.cy].idx -= dir;
+
+        int top = (dir == 1) ? E.cy - 1 : E.cy;
+        editorUpdateSyntax(&E.row[top]);
+        editorUpdateSyntax(&E.row[top] + 1);
+
+        if (E.cy < E.numrows - 2)
+            editorUpdateSyntax(&E.row[top] + 2);
+
+        E.cy += dir;
+        E.dirty++;
+
+    }
+}
+
 
 /*----- editor Operations ----*/
 
@@ -1441,6 +1469,11 @@ void editorProcessKeyPress(){
             editorSetStatusMessage("Row Pasted");
             break;
 
+        case CTRL_KEY('j'): // Move Line one up
+        case CTRL_KEY('k'): // Move Line one down
+            editorMoveRow(c == CTRL_KEY('k') ? 1 : -1);
+            break;
+
         default:
             editorInsertChar(c);
             break;
@@ -1474,7 +1507,7 @@ int main(int argc, char *argv[]){
     if (argc >= 2)
         editorOpen(argv[1]);
     
-    editorSetStatusMessage("\x1b[%dm\x1b[%dmCOPYCAT\x1b[%dm\x1b[%dm: CTRL+S: Save | Ctrl+Q: Quit | CTRL+F: Find",
+    editorSetStatusMessage("\x1b[%dm\x1b[%dmCOPYCAT\x1b[%dm\x1b[%dm: CTRL+S: Save | Ctrl+Q: Quit | CTRL+F: Find | Ctrl+J/K: Move Line Up/Down",
                             FG_BLACK, BG_WHITE, BG_DEFAULT, FG_DEFAULT);
 
     while(1){
