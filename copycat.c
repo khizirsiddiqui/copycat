@@ -1,4 +1,5 @@
 /*
+Alpha Beta Gamma
     COPYCAT ver 0.0.1
     A vim-like editor written in C without using
     any external libraries
@@ -30,13 +31,8 @@
 #include <sys/ioctl.h> // For window size
 #include <sys/types.h> // ssize_t
 
-/*----- prototypes -----*/
-void editorSetStatusMessage(const char *fmt, ...);
-void editorRefreshScreen();
-char *editorPrompt(char *prompt, void (*callback)(char*, int));
-
-
 /*----- defines -----*/
+
 #define COPYCAT_VERSION "0.0.1"
 // CTRL key assigns 5 and 6 bit to 0 and then send it
 #define CTRL_KEY(k) ((k) & 0x1f)
@@ -162,6 +158,9 @@ struct editorConfig{
     // File Data
     char *filename;
 
+    // Clipboard
+    char *clipboard;
+
     // StatusBar msg
     char statusmsg[100];
     time_t statusmsg_time;
@@ -173,6 +172,17 @@ struct editorConfig{
 };
 
 struct editorConfig E;
+
+/*----- prototypes -----*/
+void editorSetStatusMessage(const char *fmt, ...);
+void editorRefreshScreen();
+char *editorPrompt(char *prompt, void (*callback)(char*, int));
+int getWindowSize(int *rows, int *cols);
+void screenWipe();
+void editorInsertRow(int at, char *s, size_t len);
+void editorDelRow(int at);
+void editorRowAppendString(erow *row, char *s, size_t len);
+void editorUpdateSyntax(erow *row);
 
 /*----- filetypes -----*/
 
@@ -394,9 +404,28 @@ struct editorSyntax HLDB[] = {
 #define HLDB_ENTRIES (sizeof(HLDB) / sizeof(HLDB[0]))
 
 /*----- terminal -----*/
-void die(const char* s){
+
+void screenWipe() {
+    /* 
+    * Erase everything on screen
+          \x1b is the escape character (27 in decimal)
+          followed by a [ character.
+          J command is Erase in Display
+          For other commands see https://vt100.net/docs/vt100-ug/chapter3.html#ED
+                     or http://man7.org/linux/man-pages/man4/console_codes.4.html
+          2 is the argument for J: erase eveything on screen
+          4 is the number of bytes to be written
+          abAppend(&ab, "\x1b[2J", 4)
+    * Reposition the cursor to the row and col
+          H command is for the cursor
+          \x1b[15;45H is center on a 30x90 terminal
+    */
     write(STDOUT_FILENO, "\x1b[2J", 4);
     write(STDOUT_FILENO, "\x1b[H", 3);
+}
+
+void die(const char* s){
+    screenWipe();
     perror(s);
     exit(1);
 }
@@ -524,6 +553,32 @@ int getWindowSize(int *rows, int *cols){
         *rows = ws.ws_row;
         return 0;
     }
+}
+
+/*---------- Clipboard  --------*/
+
+void editorCopy() {
+    E.clipboard = realloc(E.clipboard, strlen(E.row[E.cy].chars) + 1);
+    strcpy(E.clipboard, E.row[E.cy].chars);
+}
+
+void editorCut() {
+    editorCopy();
+    editorDelRow(E.cy);
+    if (E.cy < E.numrows)
+        editorUpdateSyntax(&E.row[E.cy]);
+    if (E.cy < E.numrows - 1)
+        editorUpdateSyntax(&E.row[E.cy + 1]);
+    E.cx = (E.cy == E.numrows) ? 0 : E.row[E.cy].size;
+}
+
+void editorPaste() {
+    if (E.clipboard == NULL) return;
+    if (E.cy == E.numrows)
+        editorInsertRow(E.cy, E.clipboard, strlen(E.clipboard));
+    else
+        editorRowAppendString(&E.row[E.cy], E.clipboard, strlen(E.clipboard));
+    E.cx += strlen(E.clipboard);
 }
 
 /*----- syntax highlighting ---*/
@@ -1033,6 +1088,7 @@ void editorFind() {
 
 
 /*----- append buffer -----*/
+
 struct abuf {
     char *b;
     int len;
@@ -1055,6 +1111,7 @@ void abFree(struct abuf *ab){
 }
 
 /*----- output -----*/
+
 void editorScroll(){
     E.rx = 0;
     if (E.cy < E.numrows) {
@@ -1189,26 +1246,13 @@ void editorRefreshScreen(){
 
     // Hide cursor when refreshing
     abAppend(&ab, "\x1b[?25l", 6);
-    // Erase everything on screen
-    // \x1b is the escape character (27 in decimal)
-    // followed by a [ character.
-    // J command is Erase in Display
-    // For other commands see https://vt100.net/docs/vt100-ug/chapter3.html#ED
-    //            or http://man7.org/linux/man-pages/man4/console_codes.4.html
-    // 2 is the argument for J: erase eveything on screen
-    // 4 is the number of bytes to be written
-    // abAppend(&ab, "\x1b[2J", 4);
-
-    // Reposition the cursor to the row and col
-    // H command is for the cursor
-    // \x1b[15;45H is center on a 30x90 terminal
     abAppend(&ab, "\x1b[H", 3);
 
     editorDrawRows(&ab);
     editorDrawStatusBar(&ab);
     editorDrawMessageBar(&ab);
 
-    char buf[25];
+    char buf[35];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", 
                             (E.cy - E.rowoff) + 1, 
                             (E.rx - E.coloff) + 1);
@@ -1327,8 +1371,7 @@ void editorProcessKeyPress(){
                     quit_times--;
                     return;
             }
-            write(STDOUT_FILENO, "\x1b[2J", 4);
-            write(STDOUT_FILENO, "\x1b[H", 3);
+            screenWipe();
             exit(0);
             break;
         
@@ -1385,6 +1428,19 @@ void editorProcessKeyPress(){
             // Screen Refresh
             break;
 
+        case CTRL_KEY('c'):
+            editorCopy();
+            editorSetStatusMessage("Row Copied. Ctrl+V to paste");
+            break;
+        case CTRL_KEY('x'):
+            editorCut();
+            editorSetStatusMessage("Row Cut. Ctrl+V to paste");
+            break;
+        case CTRL_KEY('v'):
+            editorPaste();
+            editorSetStatusMessage("Row Pasted");
+            break;
+
         default:
             editorInsertChar(c);
             break;
@@ -1406,6 +1462,7 @@ void initEditor(){
     E.statusmsg[0]='\0';
     E.statusmsg_time = 0;
     E.syntax = NULL;
+    E.clipboard = NULL;
     if(getWindowSize(&E.screenrows, &E.screencols) == -1)
         die("getWindowSize");
     E.screenrows -= 2;
